@@ -17,7 +17,12 @@ enum OriginStatusType {
 }
 
 // key is hostname concated with origin url
-type OriginStatus = { down: OriginStatusType; when: string };
+type OriginStatus = {
+	down: OriginStatusType;
+	when: string;
+	messageId?: string;
+	incidentStartedAt?: string;
+};
 
 type Incident = {
 	timestamp: number;
@@ -25,6 +30,19 @@ type Incident = {
 	nodesUp: string;
 	allNodes: string;
 	message: string;
+};
+
+type DiscordEmbed = {
+	title: string;
+	description: string;
+	color: number;
+	fields: { name: string; value: string; inline?: boolean }[];
+	footer: { text: string };
+};
+
+type DiscordWebhookPayload = {
+	username: string;
+	embeds: DiscordEmbed[];
 };
 
 // the config is passed in via a cf secret. turn it into a useful object here
@@ -53,14 +71,99 @@ function stripUnicode(unicodeStr: string) {
 	return [...unicodeStr].filter((c) => c.charCodeAt(0) <= 127).join("");
 }
 
+function webhookCreateUrl(webhookUrl: string) {
+	const url = new URL(webhookUrl);
+	url.searchParams.set("wait", "true");
+	return url.toString();
+}
+
+function webhookMessageUrl(webhookUrl: string, messageId: string) {
+	const url = new URL(webhookUrl);
+	url.pathname = `${url.pathname.replace(/\/+$/, "")}/messages/${messageId}`;
+	url.search = "";
+	return url.toString();
+}
+
+function discordTime(isoTimestamp: string) {
+	const unixSeconds = Math.floor(Date.parse(isoTimestamp) / 1000);
+	if (!Number.isFinite(unixSeconds) || unixSeconds <= 0) return isoTimestamp;
+	return `<t:${unixSeconds}:F>\n<t:${unixSeconds}:R>`;
+}
+
+function buildNodeIncidentEmbed(
+	up: boolean,
+	envName: string,
+	nodeName: string,
+	healthyNodes: number,
+	totalNodes: number,
+	startedAt: string,
+	recoveredAt: string,
+): DiscordEmbed {
+	return {
+		title: up ? "Node Recovered" : "Node Down",
+		description: up ? "Node is healthy again." : "Node is currently failing health checks.",
+		color: up ? 0x1b9e77 : 0xd22d39,
+		fields: [
+			{ name: "Environment", value: `\`${envName}\``, inline: true },
+			{ name: "Node", value: nodeName, inline: true },
+			{ name: "Status", value: up ? "RESOLVED" : "DOWN", inline: true },
+			{
+				name: "Healthy Nodes",
+				value: `${healthyNodes} / ${totalNodes}`,
+				inline: true,
+			},
+			{ name: "Started", value: discordTime(startedAt), inline: true },
+			{
+				name: "Recovered",
+				value: up ? discordTime(recoveredAt) : "-",
+				inline: true,
+			},
+		],
+		footer: { text: "sheltupdate status" },
+	};
+}
+
+async function sendWebhookMessage(env: Env, payload: DiscordWebhookPayload) {
+	const response = await fetch(webhookCreateUrl(env.WEBHOOK), {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify(payload),
+	});
+
+	if (!response.ok) throw new Error(`failed to create webhook message (${response.status})`);
+
+	const json = await response.json<{ id?: string }>();
+	if (!json.id) throw new Error("webhook create response had no message id");
+	return json.id;
+}
+
+async function editWebhookMessage(env: Env, messageId: string, payload: DiscordWebhookPayload) {
+	const response = await fetch(webhookMessageUrl(env.WEBHOOK, messageId), {
+		method: "PATCH",
+		headers: {
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify(payload),
+	});
+
+	if (!response.ok) throw new Error(`failed to edit webhook message ${messageId} (${response.status})`);
+}
+
 async function reportNodeHealth(up: boolean, env: Env, envName: string, origins: Origin[], origin: Origin) {
-	let existingStatus = (await env.origin_status.get<OriginStatus>(envName + origin.url, "json"))?.down;
+	const key = envName + origin.url;
+	const existingState = await env.origin_status.get<OriginStatus>(key, "json");
+
+	let existingStatus = existingState?.down;
 	// `+` here converts any stored legacy `boolean`s correctly into `OriginStatusType`s
 	existingStatus = existingStatus != null ? +existingStatus : undefined;
+	let existingMessageId = existingState?.messageId;
 
 	// we have a very limited number of kv put()s so we need to be frugal with them
 	// put only if we have a non-up status stored, and the node is going down
 	const shouldPut = !up || existingStatus !== OriginStatusType.UP;
+	const nowIso = new Date().toISOString();
 
 	const newStatusType = up
 		? OriginStatusType.UP
@@ -70,14 +173,21 @@ async function reportNodeHealth(up: boolean, env: Env, envName: string, origins:
 				[OriginStatusType.DOWN]: OriginStatusType.DOWN,
 			}[existingStatus ?? OriginStatusType.UP];
 
-	if (shouldPut)
-		await env.origin_status.put(
-			envName + origin.url,
-			JSON.stringify({
+	let incidentStartedAt = existingState?.incidentStartedAt;
+	if (!up && !incidentStartedAt) incidentStartedAt = nowIso;
+	const startedAtForEmbed = incidentStartedAt ?? nowIso;
+	const finalIncidentStartedAt = up ? undefined : incidentStartedAt;
+
+	const firstWriteState: OriginStatus | undefined = shouldPut
+		? {
 				down: newStatusType,
-				when: new Date().toISOString(),
-			} satisfies OriginStatus),
-		);
+				when: nowIso,
+				messageId: existingMessageId,
+				incidentStartedAt: finalIncidentStartedAt,
+			}
+		: undefined;
+
+	if (shouldPut) await env.origin_status.put(key, JSON.stringify(firstWriteState));
 
 	// don't log in the database the first time we encounter
 	// a downtime, as often cloudflare blinks and a service goes for just one second or so
@@ -138,26 +248,58 @@ async function reportNodeHealth(up: boolean, env: Env, envName: string, origins:
 		.bind(envName, newNodesUp, allNodes)
 		.run();
 
-	const msg = up ? `sheltupdate origin node back up` : `sheltupdate origin node reported down`;
+	const payload: DiscordWebhookPayload = {
+		username: "sheltupdate status",
+		embeds: [
+			buildNodeIncidentEmbed(
+				up,
+				envName,
+				origin.name,
+				newNodesUpArr.length,
+				allNodesArr.length,
+				startedAtForEmbed,
+				nowIso,
+			),
+		],
+	};
 
-	const healthyNodesMsg =
-		newNodesUpArr.length === allNodesArr.length
-			? `all nodes are healthy`
-			: `healthy nodes left: ${newNodesUpArr.length} / ${allNodesArr.length}`;
+	if (existingMessageId) {
+		try {
+			await editWebhookMessage(env, existingMessageId, payload);
+			console.log("edited webhook incident message", {
+				env: envName,
+				node: origin.name,
+				messageId: existingMessageId,
+			});
+		} catch (error) {
+			console.warn("webhook edit failed; creating new incident message", {
+				env: envName,
+				node: origin.name,
+				messageId: existingMessageId,
+				error,
+			});
+			existingMessageId = await sendWebhookMessage(env, payload);
+		}
+	} else {
+		existingMessageId = await sendWebhookMessage(env, payload);
+	}
 
-	await fetch(env.WEBHOOK, {
-		method: "POST",
-		headers: {
-			"Content-Type": "application/json",
-		},
-		body: JSON.stringify({
-			username: "sheltupdate status",
-			content: `${msg}
-   \\- environment: \`${envName}\`
-   \\- node: ${origin.name}
-   \\- ${healthyNodesMsg}`,
-		}),
-	});
+	// keep one active incident message per node; once resolved, stop editing the old one.
+	const finalMessageId = up ? undefined : existingMessageId;
+	const finalState: OriginStatus = {
+		down: newStatusType,
+		when: firstWriteState?.when ?? nowIso,
+		messageId: finalMessageId,
+		incidentStartedAt: finalIncidentStartedAt,
+	};
+
+	// idk lol
+	if (
+		!firstWriteState ||
+		firstWriteState.messageId !== finalState.messageId ||
+		firstWriteState.incidentStartedAt !== finalState.incidentStartedAt
+	)
+		await env.origin_status.put(key, JSON.stringify(finalState));
 }
 
 // used by the scheduled worker, and fired off when a request fails to double-check this outcome.
@@ -185,7 +327,10 @@ export default {
 
 		// we had this actually cause a 4 min outage in staging cause someone requested //cdn.js which somehow returns 530
 		// from every node and rolled us all the way down to discord api
-		if (url.pathname.startsWith("//")) return new Response("418 I'm a Teapot. Sincerely, Fuck Off.", { status: 418 });
+		if (url.pathname.startsWith("//"))
+			return new Response("418 I'm a Teapot. Sincerely, Fuck Off.", {
+				status: 418,
+			});
 
 		if (!(url.hostname in CONFIG))
 			return new Response(
