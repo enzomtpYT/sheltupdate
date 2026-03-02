@@ -90,6 +90,11 @@ function discordTime(isoTimestamp: string) {
 	return `<t:${unixSeconds}:F>\n<t:${unixSeconds}:R>`;
 }
 
+function environmentType(envName: string) {
+	if (envName.toLowerCase().includes("staging")) return "staging";
+	return "production";
+}
+
 function buildNodeIncidentEmbed(
 	up: boolean,
 	envName: string,
@@ -104,9 +109,8 @@ function buildNodeIncidentEmbed(
 		description: up ? "Node is healthy again." : "Node is currently failing health checks.",
 		color: up ? 0x1b9e77 : 0xd22d39,
 		fields: [
-			{ name: "Environment", value: `\`${envName}\``, inline: true },
+			{ name: "Environment", value: environmentType(envName), inline: true },
 			{ name: "Node", value: nodeName, inline: true },
-			{ name: "Status", value: up ? "RESOLVED" : "DOWN", inline: true },
 			{
 				name: "Healthy Nodes",
 				value: `${healthyNodes} / ${totalNodes}`,
@@ -192,6 +196,9 @@ async function reportNodeHealth(up: boolean, env: Env, envName: string, origins:
 	// don't log in the database the first time we encounter
 	// a downtime, as often cloudflare blinks and a service goes for just one second or so
 	if (newStatusType === OriginStatusType.GRACE) return;
+
+	// bootstrap state without posting a standalone "recovered" message
+	if (existingStatus == null && up) return;
 
 	// check if this node status is already recorded in D1
 	const lastIncident = await env.incidents_db
@@ -284,12 +291,11 @@ async function reportNodeHealth(up: boolean, env: Env, envName: string, origins:
 		existingMessageId = await sendWebhookMessage(env, payload);
 	}
 
-	// keep one active incident message per node; once resolved, stop editing the old one.
-	const finalMessageId = up ? undefined : existingMessageId;
+	// keep one message per node and keep editing it across downtime/recovery transitions.
 	const finalState: OriginStatus = {
 		down: newStatusType,
 		when: firstWriteState?.when ?? nowIso,
-		messageId: finalMessageId,
+		messageId: existingMessageId,
 		incidentStartedAt: finalIncidentStartedAt,
 	};
 
