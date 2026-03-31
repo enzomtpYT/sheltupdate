@@ -14,10 +14,11 @@ Changes from GooseUpdate:
 
 Check the [shelter documentation](https://github.com/uwu/shelter/blob/main/README.md) for install instructions.
 
-The [uwu.network instance](https://inject.shelter.uwu.network) of sheltupdate hosts the branches exactly as found in this repository:
+The [enzomtp.party instance](https://shelter.enzomtp.party) of sheltupdate hosts the branches exactly as found in this repository:
  - `shelter` - injects shelter
  - `vencord` - injects Vencord
  - `equicord` - injects Equicord
+ - `pawsome` - injects PawsomeVencord
  - `betterdiscord` - injects BetterDiscord
  - `moonlight` - injects Moonlight
  - `reactdevtools` - adds React Developer Tools to your client
@@ -107,6 +108,8 @@ webFrame.top.executeJavaScript("console.log('HELLO FROM THE RENDERER');");
 If other files are in the branch directory, they will be added the module directory.
 
 # Credits
+
+Main sheltupdate instance hosted on [uwu.network](https://inject.shelter.uwu.network/)
 
 GooseUpdate was originally written by [Ducko](https://github.com/CanadaHonk/).
 
