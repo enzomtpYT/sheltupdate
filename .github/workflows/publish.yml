@@ -59,22 +59,3 @@ jobs:
               push: true
               tags: ${{ env.TAGS }}
               platforms: linux/amd64,linux/arm64,linux/arm/v7
-
-         - name: Update release container on server
-           if: env.IS_RELEASE == 'true'
-           uses: appleboy/ssh-action@master
-           with:
-              host: ${{ secrets.DEPLOY_HOST }}
-              username: ${{ secrets.DEPLOY_USER }}
-              key: ${{ secrets.DEPLOY_PRIVKEY }}
-              # this relies on a specific custom update script that is installed on the
-              # server that currently hosts sheltupdate. Adjust as needed.
-              script: ~/update.sh sheltupdate
-
-         - name: Update staging container on server
-           uses: appleboy/ssh-action@master
-           with:
-              host: ${{ secrets.DEPLOY_HOST }}
-              username: ${{ secrets.DEPLOY_USER }}
-              key: ${{ secrets.DEPLOY_PRIVKEY }}
-              script: ~/update.sh sheltupdate-staging
