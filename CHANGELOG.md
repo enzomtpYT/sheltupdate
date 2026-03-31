@@ -1,3 +1,6 @@
+## r41
+    - add PawsomeVencord
+
 ## r40
  - Update React Devtools (6.0.1 -> 7.0.1)
 
