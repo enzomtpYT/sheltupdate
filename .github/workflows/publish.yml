@@ -26,8 +26,9 @@ jobs:
 
          - name: Create Docker Image tags
            run: |
-              TAGS="ghcr.io/${{ github.repository }}:dev"
-              if docker manifest inspect ghcr.io/${{ github.repository }}:0.0.$VERSION > /dev/null 2>&1; then
+              REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+              TAGS="ghcr.io/${REPO_LOWER}:dev"
+              if docker manifest inspect ghcr.io/${REPO_LOWER}:0.0.$VERSION > /dev/null 2>&1; then
                 echo "Image with version (0.0.$VERSION) already exists in registry"
                 echo "Publishing a dev image.."
               else
@@ -35,8 +36,8 @@ jobs:
                 echo "Publishing a release and a dev image.."
                 echo "IS_RELEASE=true" >> $GITHUB_ENV
                 TAGS="${TAGS},\
-                  ghcr.io/${{ github.repository }}:0.0.${{ env.VERSION }},\
-                  ghcr.io/${{ github.repository }}:latest"
+                  ghcr.io/${REPO_LOWER}:0.0.${{ env.VERSION }},\
+                  ghcr.io/${REPO_LOWER}:latest"
               fi
               echo "TAGS=${TAGS}" >> $GITHUB_ENV
 
