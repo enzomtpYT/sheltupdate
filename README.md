@@ -37,7 +37,7 @@ The required files to deploy are `src`, `node_modules`, `branches`, `config.json
 
 Run the container as so:
 ```sh
-docker run -v /path/to/your/config.json:/config.json --tmpfs /tmp -p 8080:8080 ghcr.io/uwu/sheltupdate
+docker run -v /path/to/your/config.json:/config.json --tmpfs /tmp -p 8080:8080 ghcr.io/enzomtpyt/sheltupdate
 ```
 
 The `--tmpfs` flag is available only on Linux hosts, and omitting it will not break sheltupdate, but will cause the
